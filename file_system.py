@@ -31,14 +31,11 @@ def deserialize_index_obj(obj_dict) -> IndexObj:
     return IndexObj(**obj_dict)
 
 class Passthrough(Operations):
-    def __init__(self, root, bundle):
+    def __init__(self, root):
         self.root = root
-
         self.index_data = {}
 
-        self.bundle = bundle
-
-        with open(bundle + "/index.json") as f:
+        with open(os.path.join(INDEX_STORAGE, f"{root}.json")) as f:
             self.index_data = json.load(f)
 
         self.index = {}
@@ -48,10 +45,10 @@ class Passthrough(Operations):
     # Helpers
     # =======
 
-    def _full_path(self, partial):
+    def full_path(self, partial):
         if partial.startswith("/"):
             partial = partial[1:]
-        
+
         file_path = os.path.join(self.root, partial)
 
         potential_path = self.fetch_file(partial)
@@ -68,39 +65,37 @@ class Passthrough(Operations):
 
         item = self.index[partial]
 
-        
-        return file_path
+        return item.path
 
     # Filesystem methods
     # ==================
 
     def access(self, path, mode):
         collect()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         if not os.access(full_path, mode):
             raise FuseOSError(errno.EACCES)
 
     def chmod(self, path, mode):
         collect()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         return os.chmod(full_path, mode)
 
     def chown(self, path, uid, gid):
         collect()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         return os.chown(full_path, uid, gid)
 
     def getattr(self, path, fh=None):
         path = path[1:]
-        # may want this to immediately raise FuseOsError(2)
+
         if path not in self.index:
-            full_path = self._full_path(path)
+            full_path = self.full_path(path)
+            print(full_path)
             st = os.lstat(full_path)
             ret = dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
                      'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
             return ret
-        
-        self.fetch_file(path)
 
         item = self.index[path]
 
@@ -111,17 +106,16 @@ class Passthrough(Operations):
 
     def readdir(self, path, fh):
         dirents = ['.', '..']
-        if path == "/":
-            dirents.append('singular.py')
+
         if path[1:] in self.index and self.index[path[1:]].obj_type == "dir":
             dirents.extend(self.index[path[1:]].data)
             collect(dirents)
             for r in dirents:
                 yield r
-     
+
     def readlink(self, path):
         collect()
-        pathname = os.readlink(self._full_path(path))
+        pathname = os.readlink(self.full_path(path))
         if pathname.startswith("/"):
             # Path name is absolute, sanitize it.
             return os.path.relpath(pathname, self.root)
@@ -130,20 +124,20 @@ class Passthrough(Operations):
 
     def mknod(self, path, mode, dev):
         collect()
-        return os.mknod(self._full_path(path), mode, dev)
+        return os.mknod(self.full_path(path), mode, dev)
 
     def rmdir(self, path):
         collect()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         return os.rmdir(full_path)
 
     def mkdir(self, path, mode):
         collect()
-        return os.mkdir(self._full_path(path), mode)
+        return os.mkdir(self.full_path(path), mode)
 
     def statfs(self, path):
         collect()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         stv = os.statvfs(full_path)
         return dict((key, getattr(stv, key)) for key in ('f_bavail', 'f_bfree',
             'f_blocks', 'f_bsize', 'f_favail', 'f_ffree', 'f_files', 'f_flag',
@@ -151,36 +145,36 @@ class Passthrough(Operations):
 
     def unlink(self, path):
         collect()
-        return os.unlink(self._full_path(path))
+        return os.unlink(self.full_path(path))
 
     def symlink(self, name, target):
         collect()
-        return os.symlink(target, self._full_path(name))
+        return os.symlink(target, self.full_path(name))
 
     def rename(self, old, new):
         collect()
-        return os.rename(self._full_path(old), self._full_path(new))
+        return os.rename(self.full_path(old), self.full_path(new))
 
     def link(self, target, name):
         collect()
-        return os.link(self._full_path(name), self._full_path(target))
+        return os.link(self.full_path(name), self.full_path(target))
 
     def utimens(self, path, times=None):
         collect()
-        return os.utime(self._full_path(path), times)
+        return os.utime(self.full_path(path), times)
 
     # File methods
     # ============
 
     def open(self, path, flags):
         collect()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         return os.open(full_path, flags)
 
     def create(self, path, mode, fi=None):
         collect()
         uid, gid, pid = fuse_get_context()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         fd = os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
         os.chown(full_path,uid,gid) #chown to context uid & gid
         return fd
@@ -197,7 +191,7 @@ class Passthrough(Operations):
 
     def truncate(self, path, length, fh=None):
         collect()
-        full_path = self._full_path(path)
+        full_path = self.full_path(path)
         with open(full_path, 'r+') as f:
             f.truncate(length)
 
@@ -215,14 +209,14 @@ class Passthrough(Operations):
 
 
 class FileSystem:
-    def __init__(self, root, bundle):
+    def __init__(self, root):
+        os.makedirs("fs", exist_ok=True)
         self.root = root
-        self.mountpoint = bundle + "/proxyfs"
-        self.bundle = bundle
+        self.mountpoint = "fs"
         self.process = None
 
     def start_fuse(self):
-        self.process = FUSE(Passthrough(self.root, self.bundle), self.mountpoint, nothreads=True, foreground=True, nonempty=True)
+        self.process = FUSE(Passthrough(self.root), self.mountpoint, nothreads=True, foreground=True, nonempty=True)
 
     def stop_fuse(self):
         if self.process:

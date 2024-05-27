@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from constants import INDEX_STORAGE, FILE_STORAGE 
 
 class IndexObj:
@@ -19,30 +20,31 @@ class IndexObj:
 
 class Indexer:
     def __init__(self, source_path):
+        os.makedirs(INDEX_STORAGE, exist_ok=True)
+        os.makedirs(FILE_STORAGE, exist_ok=True)
+
         self.rootfs_path_to_index_obj = {}
         self.seen = set()
         self.source_path = source_path
-        self.target_path = os.join(source_path, "content-addressed")
-        self.image_path = os.join(INDEX_STORAGE, source_path)
+        self.target_path = f"target-files-{source_path}"
+        self.index_path = os.path.join(INDEX_STORAGE, source_path)
 
     def index(self):
+        os.makedirs(self.target_path, exist_ok=True)
+
         self.generate_index(self.source_path, self.target_path)
         self.handle_links(self.source_path, self.target_path)
         self.produce_stat()
 
-        os.makedirs(os.path.dirname(self.image_path), exist_ok=True)
-        
         for key, obj in self.rootfs_path_to_index_obj.items():
-            obj.path = re.sub(r'image-files-[^/]+', '', obj.path)
+            obj.path = re.sub(r'target-files-[^/]+', f'{FILE_STORAGE}', obj.path)
 
-        with open(self.image_path, 'w') as index_file:
+        with open(self.index_path + ".json", 'w') as index_file:
             json.dump(self.rootfs_path_to_index_obj, index_file, default=vars, indent=4)        
 
         shutil.copytree(self.target_path, FILE_STORAGE, dirs_exist_ok=True)
 
-        shutil.rmtree(self.source_path, ignore_errors=True)
         shutil.rmtree(self.target_path, ignore_errors=True)
-        print("Indexing completed successfully")
 
     def generate_index(self, directory, target_directory):
         items = os.listdir(directory)
@@ -104,12 +106,8 @@ class Indexer:
                     self.handle_links(source_item_path, target_item_path)
 
     def produce_stat(self):
-        command = ['sudo', 'du', '-sh', f'{self.source_path}']
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
         self.rootfs_path_to_index_obj[''] = IndexObj('', "dir", data=os.listdir(self.target_path))
         del self.rootfs_path_to_index_obj[self.source_path]
-
         for file_path, index_obj in self.rootfs_path_to_index_obj.items():
             try:
                 stat_path = index_obj.path
