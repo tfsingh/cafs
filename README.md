@@ -1,2 +1,1 @@
 # cafs
-Content addressed filesystem
